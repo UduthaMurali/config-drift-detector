@@ -2,7 +2,7 @@
 
 > **Automated Prevention of Code-to-Config Drift in CI/CD Pipelines**  
 > HAW Kiel — Advanced Software Engineering (Release Engineering)  
-> Team project · 3 members · 450 hrs total
+> Team: Murali Udutha & Rakesh Reddy
 
 [![Drift Check](https://github.com/UduthaMurali/config-drift-detector/actions/workflows/drift-check.yml/badge.svg)](https://github.com/UduthaMurali/config-drift-detector/actions/workflows/drift-check.yml)
 
@@ -154,7 +154,7 @@ USER
 ## Academic Context
 
 - **Course**: Advanced Software Engineering — Release Engineering, HAW Kiel  
-- **Team**: 3 members x 150 hours = 450 total project hours  
+- **Team**: Murali Udutha & Rakesh Reddy — HAW Kiel  
 - **Novelty**: First tool combining multi-language AST analysis (Java + Python + C++) with GitHub Action PR blocking for config drift
 
 ---
