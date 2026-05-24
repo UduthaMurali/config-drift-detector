@@ -1,0 +1,13 @@
+version: '3.8'
+services:
+  app:
+    image: my-app:latest
+    environment:
+      - DATABASE_URL=postgres://localhost:5432/mydb
+      - API_KEY=dev-key-12345
+      - REDIS_HOST=localhost
+      - LOG_LEVEL=DEBUG
+      # NOTE: STRIPE_SECRET and SMTP_HOST are intentionally missing
+      # to demonstrate drift detection
+    ports:
+      - "8080:8080"

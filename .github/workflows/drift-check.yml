@@ -1,0 +1,24 @@
+name: Config Drift Check
+
+on:
+  pull_request:
+    branches: [main, master, develop]
+
+jobs:
+  drift-detection:
+    runs-on: ubuntu-latest
+    name: Detect Code-to-Config Drift
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Config Drift Detector
+        uses: ./action
+        with:
+          source-paths: 'src/'
+          config-paths: 'k8s/, docker-compose.yml, .env.example'
+          languages: 'java,python,cpp'
+          fail-on-drift: 'true'
+          skip-unused: 'false'
+          driftignore: '.driftignore'
