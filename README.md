@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/haw-logo.png" alt="HAW Kiel Logo" width="160"/>
+</p>
+
 # Config Drift Detector
 
 > **Automated Prevention of Code-to-Config Drift in CI/CD Pipelines**  
