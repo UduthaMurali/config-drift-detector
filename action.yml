@@ -1,5 +1,5 @@
 name: 'Config Drift Detector'
-description: 'Detects code-to-config drift — env vars used in Java/Python/C++ code but missing from deployment config files.'
+description: 'Detects code-to-config drift — env vars used in code (Python, Java, C/C++, Go, JavaScript/TypeScript, Rust) but missing from deployment config files. Supports Spring Boot, Pydantic BaseSettings, and env-injection framework adapters.'
 author: 'Murali Udutha & Rakesh Reddy — HAW Kiel'
 
 branding:
@@ -16,9 +16,9 @@ inputs:
     required: true
     default: '.'
   languages:
-    description: 'Languages to scan: python, java, cpp (comma-separated)'
+    description: 'Languages to scan: python, java, cpp, go, js, rust, spring, pydantic (comma-separated)'
     required: false
-    default: 'python,java,cpp'
+    default: 'python,java,cpp,go,js,rust,spring,pydantic'
   fail-on-drift:
     description: 'Fail the action (exit 1) if critical drift is detected'
     required: false

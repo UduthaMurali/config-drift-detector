@@ -133,6 +133,67 @@ def collect_cpp_refs(source_paths):
     return refs
 
 
+
+def _run_scanner(scanner_path, source_paths, extensions, language):
+    """Generic subprocess runner for Go/JS/Rust scanners."""
+    refs = []
+    for path in source_paths:
+        is_valid = os.path.isdir(path) or any(path.endswith(e) for e in extensions)
+        if not is_valid:
+            continue
+        try:
+            result = subprocess.run(
+                [sys.executable, scanner_path, path],
+                capture_output=True, text=True, timeout=60)
+            data = json.loads(result.stdout)
+            for item in data.get("static", []):
+                refs.append(EnvRef(
+                    variable=item["variable"], file=item["file"],
+                    line=item["line"], method=item["method"],
+                    language=language,
+                    has_default=item.get("has_default", False),
+                ))
+            for item in data.get("dynamic", []):
+                refs.append(EnvRef(
+                    variable="<dynamic>", file=item["file"],
+                    line=item["line"], method=item["method"],
+                    language=language, is_dynamic=True,
+                ))
+        except Exception as e:
+            log(f"  [WARN] {language} scan failed for {path}: {e}",
+                Fore.YELLOW if USE_COLOR else None)
+    return refs
+
+
+def collect_go_refs(source_paths):
+    scanner = os.path.join(os.path.dirname(__file__), "scanners", "go", "go_scanner.py")
+    return _run_scanner(scanner, source_paths, (".go",), "go")
+
+
+def collect_js_refs(source_paths):
+    scanner = os.path.join(os.path.dirname(__file__), "scanners", "js", "js_scanner.py")
+    exts = (".js", ".ts", ".jsx", ".tsx", ".mjs", ".cjs")
+    return _run_scanner(scanner, source_paths, exts, "js")
+
+
+def collect_rust_refs(source_paths):
+    scanner = os.path.join(os.path.dirname(__file__), "scanners", "rust", "rust_scanner.py")
+    return _run_scanner(scanner, source_paths, (".rs",), "rust")
+
+def collect_spring_refs(source_paths):
+    scanner = os.path.join(os.path.dirname(__file__), "scanners", "spring", "spring_scanner.py")
+    return _run_scanner(scanner, source_paths, (".properties", ".yml", ".yaml", ".java"), "spring")
+
+def collect_pydantic_refs(source_paths):
+    scanner = os.path.join(os.path.dirname(__file__), "scanners", "pydantic", "pydantic_scanner.py")
+    return _run_scanner(scanner, source_paths, (".py",), "pydantic")
+
+def collect_env_inject_refs(source_paths):
+    scanner = os.path.join(os.path.dirname(__file__), "scanners", "env_inject", "env_inject_scanner.py")
+    return _run_scanner(scanner, source_paths, (".yml", ".yaml", ".env", ".properties", ".conf", ".ini", ".toml"), "env_inject")
+
+
+
 # --------------------------------------------------------------------------
 # Config parsers
 # --------------------------------------------------------------------------
@@ -193,8 +254,8 @@ def main():
                         help="Comma-separated source dirs/files to scan")
     parser.add_argument("--config",        required=True,
                         help="Comma-separated config paths (dirs or files)")
-    parser.add_argument("--languages",     default="python,java,cpp",
-                        help="Languages: python,java,cpp")
+    parser.add_argument("--languages",     default="python,java,cpp,go,js,rust,spring,pydantic",
+                        help="Languages: python,java,cpp,go,js,rust (comma-separated)")
     parser.add_argument("--json",          action="store_true",
                         help="Output results as JSON (all logs go to stderr)")
     parser.add_argument("--fail-on-drift", action="store_true",
@@ -233,6 +294,45 @@ def main():
         refs = collect_cpp_refs(source_paths)
         all_refs += refs
         log(f"    Found {sum(1 for r in refs if not r.is_dynamic)} static references")
+
+    if "go" in languages:
+        log("  Scanning Go...", Fore.BLUE if USE_COLOR else None)
+        refs = collect_go_refs(source_paths)
+        all_refs += refs
+        log(f"    Found {sum(1 for r in refs if not r.is_dynamic)} static + "
+            f"{sum(1 for r in refs if r.is_dynamic)} dynamic references")
+
+    if "js" in languages or "ts" in languages or "javascript" in languages or "typescript" in languages:
+        log("  Scanning JavaScript/TypeScript...", Fore.BLUE if USE_COLOR else None)
+        refs = collect_js_refs(source_paths)
+        all_refs += refs
+        log(f"    Found {sum(1 for r in refs if not r.is_dynamic)} static + "
+            f"{sum(1 for r in refs if r.is_dynamic)} dynamic references")
+
+    if "rust" in languages:
+        log("  Scanning Rust...", Fore.BLUE if USE_COLOR else None)
+        refs = collect_rust_refs(source_paths)
+        all_refs += refs
+        log(f"    Found {sum(1 for r in refs if not r.is_dynamic)} static + "
+            f"{sum(1 for r in refs if r.is_dynamic)} dynamic references")
+
+    if "spring" in languages:
+        log("  Scanning Spring Boot config files...", Fore.BLUE if USE_COLOR else None)
+        refs = collect_spring_refs(source_paths)
+        all_refs += refs
+        log(f"    Found {sum(1 for r in refs if not r.is_dynamic)} Spring ${'{'}VAR{'}'} references")
+
+    if "pydantic" in languages:
+        log("  Scanning Pydantic BaseSettings classes...", Fore.BLUE if USE_COLOR else None)
+        refs = collect_pydantic_refs(source_paths)
+        all_refs += refs
+        log(f"    Found {sum(1 for r in refs if not r.is_dynamic)} Pydantic field references")
+
+    if "env_inject" in languages or "gitea" in languages:
+        log("  Scanning env-injection patterns (SECTION__KEY)...", Fore.BLUE if USE_COLOR else None)
+        refs = collect_env_inject_refs(source_paths)
+        all_refs += refs
+        log(f"    Found {sum(1 for r in refs if not r.is_dynamic)} env-injection references")
 
     # Collect config declarations
     log("  Parsing config files...", Fore.BLUE if USE_COLOR else None)

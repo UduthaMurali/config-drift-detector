@@ -23,12 +23,12 @@ class EnvReference:
 
 
 # ── Regex-based fallback scanner ──────────────────────────────────────────────
-# Matches: getenv("KEY")  /  std::getenv("KEY")
+# Matches: getenv("KEY")  /  std::getenv("KEY")  /  curl_getenv("KEY") / Curl_getenv("KEY")
 GETENV_RE = re.compile(
-    r'(?:std\s*::\s*)?getenv\s*\(\s*"([A-Za-z_][A-Za-z0-9_]*)"\s*\)',
+    r'(?:(?:std\s*::\s*)|(?:[A-Za-z]+_))?getenv\s*\(\s*"([A-Za-z_][A-Za-z0-9_]*)"\s*\)',
 )
 GETENV_DYNAMIC_RE = re.compile(
-    r'(?:std\s*::\s*)?getenv\s*\(\s*(?!"[A-Za-z_])',
+    r'(?:(?:std\s*::\s*)|(?:[A-Za-z]+_))?getenv\s*\(\s*(?!"[A-Za-z_])',
 )
 
 
@@ -87,7 +87,7 @@ def scan_file_treesitter(filepath: str) -> Optional[List[EnvReference]]:
                 args = node.child_by_field_name("arguments")
                 if func and args:
                     func_text = source[func.start_byte:func.end_byte].decode("utf-8", errors="ignore").replace(" ", "")
-                    if func_text in ("getenv", "std::getenv"):
+                    if func_text in ("getenv", "std::getenv") or func_text.endswith("getenv"):
                         # Get first argument
                         string_nodes = [c for c in args.children if c.type == "string_literal"]
                         if string_nodes:
