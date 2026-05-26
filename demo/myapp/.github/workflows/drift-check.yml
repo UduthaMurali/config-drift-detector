@@ -1,0 +1,21 @@
+name: Config Drift Check
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  drift-detection:
+    runs-on: ubuntu-latest
+    name: Detect Code-to-Config Drift
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Config Drift Detector
+        uses: UduthaMurali/config-drift-detector@v1
+        with:
+          source-paths: 'src/'
+          config-paths: 'config/'
+          fail-on-drift: 'true'

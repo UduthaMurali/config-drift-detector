@@ -1,0 +1,54 @@
+name: 'Config Drift Detector'
+description: 'Detects code-to-config drift — env vars used in Java/Python/C++ code but missing from deployment config files.'
+author: 'Murali Udutha & Rakesh Reddy — HAW Kiel'
+
+branding:
+  icon: 'alert-triangle'
+  color: 'orange'
+
+inputs:
+  source-paths:
+    description: 'Comma-separated source directories to scan'
+    required: true
+    default: 'src/'
+  config-paths:
+    description: 'Comma-separated config paths (dirs or files: k8s/, docker-compose.yml, .env)'
+    required: true
+    default: '.'
+  languages:
+    description: 'Languages to scan: python, java, cpp (comma-separated)'
+    required: false
+    default: 'python,java,cpp'
+  fail-on-drift:
+    description: 'Fail the action (exit 1) if critical drift is detected'
+    required: false
+    default: 'true'
+  skip-unused:
+    description: 'Skip reporting unused variables in config'
+    required: false
+    default: 'false'
+  driftignore:
+    description: 'Path to .driftignore file'
+    required: false
+    default: '.driftignore'
+
+outputs:
+  drift-detected:
+    description: 'true if critical drift was detected, false otherwise'
+  missing-count:
+    description: 'Number of missing variables detected'
+  report-json:
+    description: 'Full JSON drift report'
+
+runs:
+  using: 'docker'
+  image: 'action/Dockerfile'
+  args:
+    - '--source'
+    - ${{ inputs.source-paths }}
+    - '--config'
+    - ${{ inputs.config-paths }}
+    - '--languages'
+    - ${{ inputs.languages }}
+    - '--driftignore'
+    - ${{ inputs.driftignore }}
