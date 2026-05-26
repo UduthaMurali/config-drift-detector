@@ -2,7 +2,7 @@ name: Config Drift Check
 
 on:
   pull_request:
-    branches: [main, master, develop]
+    branches: [main]
 
 jobs:
   drift-detection:
@@ -14,11 +14,8 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Run Config Drift Detector
-        uses: ./action
+        uses: UduthaMurali/config-drift-detector@v1
         with:
-          source-paths: 'demo/myapp/src/'
-          config-paths: 'demo/myapp/config/'
-          languages: 'python'
+          source-paths: 'src/'
+          config-paths: 'config/'
           fail-on-drift: 'true'
-          skip-unused: 'false'
-          driftignore: '.driftignore'
