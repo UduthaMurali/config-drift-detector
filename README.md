@@ -113,9 +113,9 @@ jobs:
         run: |
           set -o pipefail
           python .drift-tool/main.py \
-            --source app/\          # ← change to your source folder
-            --config config/ \      # ← change to your config folder
-            --languages python \    # ← change to your language(s)
+            --source app/ \
+            --config config/ \
+            --languages python \
             --fail-on-drift \
             --json | tee drift-report.json
         continue-on-error: true
