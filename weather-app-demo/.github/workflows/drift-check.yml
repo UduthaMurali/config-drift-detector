@@ -1,0 +1,121 @@
+# ============================================================
+#  Config Drift Detector — GitHub Actions Workflow
+#  Runs on every push and pull request.
+#  Blocks the PR if critical drift is detected.
+# ============================================================
+
+name: Config Drift Check
+
+on:
+  push:
+    branches:
+      - main
+      - 'feature/**'
+      - 'update/**'
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  drift-check:
+    name: Detect Config Drift
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Config Drift Detector
+        run: |
+          git clone https://github.com/UduthaMurali/config-drift-detector.git .drift-tool
+          pip install -r .drift-tool/requirements.txt --quiet
+
+      - name: Run Config Drift Check
+        id: drift
+        run: |
+          set -o pipefail
+          python .drift-tool/main.py \
+            --source app/ \
+            --config config/ \
+            --languages python \
+            --fail-on-drift \
+            --json | tee drift-report.json
+        continue-on-error: true
+
+      - name: Post drift report as PR comment
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            let report;
+            try {
+              report = JSON.parse(fs.readFileSync('drift-report.json', 'utf8'));
+            } catch (e) {
+              report = { drift_level: 'ERROR', drift_score: 0, missing_in_config: [] };
+            }
+            const level = report.drift_level || 'UNKNOWN';
+            const score = report.drift_score || 0;
+            const items = report.missing_in_config || [];
+            const emoji = { NONE: '✅', LOW: '⚠️', MEDIUM: '🟠', HIGH: '🔴' }[level] || '❓';
+            let body = `## ${emoji} Config Drift Report\n\n`;
+            body += `**Drift Level:** \`${level}\`  |  **Drift Score:** ${score}\n\n`;
+            if (items.length === 0) {
+              body += `All environment variables referenced in code are declared in deployment config.\n`;
+              body += `No drift detected — safe to merge! ✅\n`;
+            } else {
+              const critical = items.filter(i => i.severity === 'critical');
+              const warnings = items.filter(i => i.severity === 'warning');
+              if (critical.length > 0) {
+                body += `### 🔴 Critical — ${critical.length} variable(s) have NO default value\n`;
+                body += `> App will **crash or behave incorrectly** if deployed without these.\n\n`;
+                body += `| Variable | File | Line | Method |\n|---|---|---|---|\n`;
+                for (const item of critical) {
+                  body += `| \`${item.variable}\` | \`${item.file}\` | ${item.line} | ${item.method} |\n`;
+                }
+                body += `\n`;
+              }
+              if (warnings.length > 0) {
+                body += `### ⚠️ Warning — ${warnings.length} variable(s) have a default but are not declared in config\n\n`;
+                body += `| Variable | File | Line | Method |\n|---|---|---|---|\n`;
+                for (const item of warnings) {
+                  body += `| \`${item.variable}\` | \`${item.file}\` | ${item.line} | ${item.method} |\n`;
+                }
+                body += `\n`;
+              }
+              body += `---\n**Fix:** Add the missing variables to \`config/.env\`, `;
+              body += `\`config/docker-compose.yml\`, and \`config/k8s/deployment.yaml\` `;
+              body += `before merging.\n`;
+            }
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body
+            });
+
+      - name: Block PR on critical drift
+        if: steps.drift.outcome == 'failure'
+        run: |
+          echo ""
+          echo "╔══════════════════════════════════════════════════╗"
+          echo "║  ❌  CRITICAL CONFIG DRIFT DETECTED              ║"
+          echo "║                                                  ║"
+          echo "║  Environment variables used in code are missing  ║"
+          echo "║  from deployment config. Deploying this code     ║"
+          echo "║  will cause crashes or silent failures.          ║"
+          echo "║                                                  ║"
+          echo "║  See the PR comment for the full list of         ║"
+          echo "║  missing variables.                              ║"
+          echo "╚══════════════════════════════════════════════════╝"
+          echo ""
+          exit 1
