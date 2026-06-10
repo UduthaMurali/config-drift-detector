@@ -106,6 +106,55 @@ Add this step to any workflow to block PRs that introduce drift:
 
 ---
 
+## .github/workflows/drift-check.yml
+
+Copy this file into your repo to enable drift detection on every PR:
+
+```yaml
+name: Config Drift Check
+
+on:
+  pull_request:
+    branches:
+      - main
+      - master
+  push:
+    branches:
+      - main
+      - master
+
+jobs:
+  drift-check:
+    name: Detect Config Drift
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Config Drift Detector
+        uses: UduthaMurali/config-drift-detector@v1
+        with:
+          # Path(s) to your source code — comma-separated
+          source-paths: 'src/'
+
+          # Path(s) to your deployment config files — comma-separated
+          # Supports: Kubernetes YAML dirs, docker-compose.yml, .env files, Dockerfiles
+          config-paths: 'k8s/, docker-compose.yml, .env'
+
+          # Languages to scan — remove any your project doesn't use
+          # Options: python, java, cpp, go, js, rust, spring, pydantic
+          languages: 'python,java,cpp,go,js,rust'
+
+          # Fail the PR if critical drift (missing vars with no default) is found
+          fail-on-drift: 'true'
+
+          # Path to your .driftignore file (suppresses known false positives)
+          driftignore: '.driftignore'
+```
+
+---
+
 ## .driftignore
 
 Create a `.driftignore` file at the root of your repo to suppress variables that are always present in any environment and don't need to be declared in your configs:
@@ -142,12 +191,6 @@ Config Drift Detector is the only tool in this space that combines multi-languag
 ## Evaluation
 
 ### Test Suite
-
-The project ships with **23 unit tests** across three test modules. Run them with:
-
-```bash
-pytest tests/ -v
-```
 
 Full output:
 
