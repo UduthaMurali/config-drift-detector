@@ -1,3 +1,10 @@
 pyyaml>=6.0
 colorama>=0.4.6
 flask
+
+# Tree-sitter AST scanning (optional — scanners fall back to regex if absent)
+tree-sitter>=0.21.0
+tree-sitter-go>=0.21.0
+tree-sitter-javascript>=0.21.0
+tree-sitter-rust>=0.21.0
+# tree-sitter-cpp already used by the C++ scanner

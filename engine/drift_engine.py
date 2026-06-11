@@ -178,20 +178,63 @@ class DriftReport:
         return "\n".join(lines)
 
 
-def load_driftignore(path: str = ".driftignore") -> Set[str]:
-    """Load variable names to ignore from .driftignore file."""
-    ignored = set()
+@dataclass
+class DriftIgnoreConfig:
+    """Parsed .driftignore configuration."""
+    variables: Set[str]   # uppercase variable names to suppress
+    folders: Set[str]     # folder names to exclude from scanning
+
+
+def load_driftignore(path: str = ".driftignore") -> DriftIgnoreConfig:
+    """
+    Load .driftignore file.
+
+    Supports two sections (backward-compatible — plain variable list still works):
+
+        # Variables to ignore
+        PATH
+        JAVA_HOME
+
+        [folders]
+        k8s
+        vendor
+        config
+    """
+    variables: Set[str] = set()
+    folders: Set[str] = set()
+
     if not os.path.exists(path):
-        return ignored
+        return DriftIgnoreConfig(variables=variables, folders=folders)
+
+    in_folders_section = False
     try:
         with open(path, "r") as f:
             for line in f:
                 line = line.strip()
-                if line and not line.startswith("#"):
-                    ignored.add(line.upper())
+                if not line or line.startswith("#"):
+                    continue
+                if line.lower() == "[folders]":
+                    in_folders_section = True
+                    continue
+                if line.startswith("["):          # any other future section
+                    in_folders_section = False
+                    continue
+                if in_folders_section:
+                    folders.add(line.lower())
+                else:
+                    variables.add(line.upper())
     except Exception:
         pass
-    return ignored
+
+    return DriftIgnoreConfig(variables=variables, folders=folders)
+
+
+def _path_in_ignored_folder(filepath: str, ignored_folders: Set[str]) -> bool:
+    """Return True if any component of filepath matches an ignored folder name."""
+    if not ignored_folders:
+        return False
+    parts = filepath.replace("\\", "/").split("/")
+    return any(p.lower() in ignored_folders for p in parts)
 
 
 def detect_drift(
@@ -199,13 +242,25 @@ def detect_drift(
     config_decls: List[ConfigDecl],
     config_files: List[str],
     languages: List[str],
+    driftignore: "DriftIgnoreConfig | None" = None,
     driftignore_path: str = ".driftignore",
 ) -> DriftReport:
     """
     Core drift detection algorithm.
     Returns a DriftReport with all findings.
+
+    Pass a pre-loaded DriftIgnoreConfig via `driftignore`, or let it be loaded
+    from `driftignore_path` automatically.
     """
-    ignored = load_driftignore(driftignore_path)
+    if driftignore is None:
+        driftignore = load_driftignore(driftignore_path)
+
+    ignored = driftignore.variables
+
+    # Filter refs from ignored folders
+    if driftignore.folders:
+        code_refs = [r for r in code_refs
+                     if not _path_in_ignored_folder(r.file, driftignore.folders)]
 
     # Separate static vs dynamic
     static_refs = [r for r in code_refs if not r.is_dynamic]
@@ -257,5 +312,5 @@ def detect_drift(
         missing_in_config=missing,
         unused_in_config=unused,
         dynamic_warnings=dynamic_refs,
-        ignored_variables=list(ignored),
+        ignored_variables=list(ignored) + [f"[folder] {f}" for f in driftignore.folders],
     )

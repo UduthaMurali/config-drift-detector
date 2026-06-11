@@ -10,14 +10,18 @@ import os
 import sys
 import json
 import subprocess
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from scanners.python.python_scanner import scan_directory as py_scan_dir
 from scanners.python.python_scanner import scan_file as py_scan_file
 from parsers.kubernetes_parser import parse_directory as k8s_dir, parse_file as k8s_file
 from parsers.docker_compose_parser import parse_directory as compose_dir, parse_file as compose_file
-from parsers.env_file_parser import parse_directory as env_dir, parse_file as env_file
+from parsers.env_file_parser import (
+    parse_directory as env_dir, parse_file as env_file,
+    parse_envrc, parse_systemd_service, parse_shell_script,
+)
 from parsers.dockerfile_parser import parse_directory as dockerfile_dir, parse_file as dockerfile_file
-from engine.drift_engine import detect_drift, EnvRef, ConfigDecl
+from engine.drift_engine import detect_drift, EnvRef, ConfigDecl, load_driftignore
 
 try:
     from colorama import Fore, Style, init as colorama_init
@@ -133,7 +137,6 @@ def collect_cpp_refs(source_paths):
     return refs
 
 
-
 def _run_scanner(scanner_path, source_paths, extensions, language):
     """Generic subprocess runner for Go/JS/Rust scanners."""
     refs = []
@@ -193,12 +196,35 @@ def collect_env_inject_refs(source_paths):
     return _run_scanner(scanner, source_paths, (".yml", ".yaml", ".env", ".properties", ".conf", ".ini", ".toml"), "env_inject")
 
 
-
 # --------------------------------------------------------------------------
 # Config parsers
 # --------------------------------------------------------------------------
 
-def collect_config_decls(config_paths):
+def collect_shell_env_decls() -> list:
+    """
+    Read currently exported shell/process environment variables.
+    These are treated as declared config vars (marked [from environment]) so that
+    variables injected by CI/CD, secret managers, or shell exports don't trigger
+    false-positive 'missing' reports — same behaviour as envgrd.
+    Only variables matching the standard naming convention are included.
+    """
+    import re
+    VAR_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
+    # Skip low-signal system variables that are virtually always present
+    SKIP = {
+        "PATH", "HOME", "USER", "SHELL", "TERM", "LANG", "LC_ALL",
+        "PWD", "OLDPWD", "SHLVL", "LOGNAME", "HOSTNAME", "_",
+    }
+    decls = []
+    for key, _ in os.environ.items():
+        if key in SKIP:
+            continue
+        if VAR_RE.match(key):
+            decls.append(ConfigDecl(variable=key, file="[shell environment]", source="shell_environment"))
+    return decls
+
+
+def collect_config_decls(config_paths, use_shell_env: bool = True):
     decls = []
     files_scanned = []
 
@@ -225,6 +251,12 @@ def collect_config_decls(config_paths):
                 raw = dockerfile_file(path)
             elif fname.endswith((".yaml", ".yml")):
                 raw = k8s_file(path)
+            elif fname == ".envrc":
+                raw = parse_envrc(path)
+            elif fname.endswith(".service"):
+                raw = parse_systemd_service(path)
+            elif fname.endswith((".sh", ".bash")):
+                raw = parse_shell_script(path)
             for v in raw:
                 decls.append(ConfigDecl(variable=v.variable,
                                         file=v.file, source=v.source))
@@ -234,10 +266,18 @@ def collect_config_decls(config_paths):
                 decls.append(ConfigDecl(variable=v.variable, file=v.file, source=v.source))
             for v in compose_dir(path):
                 decls.append(ConfigDecl(variable=v.variable, file=v.file, source=v.source))
-            for v in env_dir(path):
+            for v in env_dir(path):        # now also picks up .envrc, .service, .sh
                 decls.append(ConfigDecl(variable=v.variable, file=v.file, source=v.source))
             for v in dockerfile_dir(path):
                 decls.append(ConfigDecl(variable=v.variable, file=v.file, source=v.source))
+
+    # Add live shell environment variables (prevents CI/CD false positives)
+    if use_shell_env:
+        shell_decls = collect_shell_env_decls()
+        decls.extend(shell_decls)
+        if shell_decls:
+            log(f"    + {len(shell_decls)} variable(s) from live shell environment",
+                Fore.CYAN if USE_COLOR else None)
 
     return decls, files_scanned
 
@@ -260,83 +300,102 @@ def main():
                         help="Output results as JSON (all logs go to stderr)")
     parser.add_argument("--fail-on-drift", action="store_true",
                         help="Exit 1 if critical drift detected")
-    parser.add_argument("--driftignore",   default=".driftignore",
+    parser.add_argument("--driftignore",     default=".driftignore",
                         help="Path to .driftignore file")
-    parser.add_argument("--skip-unused",   action="store_true",
+    parser.add_argument("--skip-unused",     action="store_true",
                         help="Do not report unused config variables")
+    parser.add_argument("--no-shell-env",    action="store_true",
+                        help="Do not read live shell environment variables as declared config")
     args = parser.parse_args()
 
     source_paths = [p.strip() for p in args.source.split(",") if p.strip()]
     config_paths = [p.strip() for p in args.config.split(",") if p.strip()]
     languages    = [l.strip().lower() for l in args.languages.split(",")]
 
+    # Load driftignore early so folder filtering works during scan
+    driftignore = load_driftignore(args.driftignore)
+    if driftignore.folders:
+        log(f"  [INFO] Ignoring folders: {', '.join(sorted(driftignore.folders))}",
+            Fore.CYAN if USE_COLOR else None)
+
     log("\nConfig Drift Detector", Fore.CYAN if USE_COLOR else None)
     log("=" * 50)
 
-    # Collect code references
-    all_refs = []
-
+    # ── Build scanner task map ─────────────────────────────────────────────────
+    scanner_tasks = {}
     if "python" in languages:
-        log("  Scanning Python...", Fore.BLUE if USE_COLOR else None)
-        refs = collect_python_refs(source_paths)
-        all_refs += refs
-        log(f"    Found {sum(1 for r in refs if not r.is_dynamic)} static + "
-            f"{sum(1 for r in refs if r.is_dynamic)} dynamic references")
-
+        scanner_tasks["python"] = (collect_python_refs, source_paths)
     if "java" in languages:
-        log("  Scanning Java...", Fore.BLUE if USE_COLOR else None)
-        refs = collect_java_refs(source_paths)
-        all_refs += refs
-        log(f"    Found {sum(1 for r in refs if not r.is_dynamic)} static references")
-
+        scanner_tasks["java"] = (collect_java_refs, source_paths)
     if "cpp" in languages:
-        log("  Scanning C++...", Fore.BLUE if USE_COLOR else None)
-        refs = collect_cpp_refs(source_paths)
-        all_refs += refs
-        log(f"    Found {sum(1 for r in refs if not r.is_dynamic)} static references")
-
+        scanner_tasks["cpp"] = (collect_cpp_refs, source_paths)
     if "go" in languages:
-        log("  Scanning Go...", Fore.BLUE if USE_COLOR else None)
-        refs = collect_go_refs(source_paths)
-        all_refs += refs
-        log(f"    Found {sum(1 for r in refs if not r.is_dynamic)} static + "
-            f"{sum(1 for r in refs if r.is_dynamic)} dynamic references")
-
-    if "js" in languages or "ts" in languages or "javascript" in languages or "typescript" in languages:
-        log("  Scanning JavaScript/TypeScript...", Fore.BLUE if USE_COLOR else None)
-        refs = collect_js_refs(source_paths)
-        all_refs += refs
-        log(f"    Found {sum(1 for r in refs if not r.is_dynamic)} static + "
-            f"{sum(1 for r in refs if r.is_dynamic)} dynamic references")
-
+        scanner_tasks["go"] = (collect_go_refs, source_paths)
+    if any(l in languages for l in ("js", "ts", "javascript", "typescript")):
+        scanner_tasks["js"] = (collect_js_refs, source_paths)
     if "rust" in languages:
-        log("  Scanning Rust...", Fore.BLUE if USE_COLOR else None)
-        refs = collect_rust_refs(source_paths)
-        all_refs += refs
-        log(f"    Found {sum(1 for r in refs if not r.is_dynamic)} static + "
-            f"{sum(1 for r in refs if r.is_dynamic)} dynamic references")
-
+        scanner_tasks["rust"] = (collect_rust_refs, source_paths)
     if "spring" in languages:
-        log("  Scanning Spring Boot config files...", Fore.BLUE if USE_COLOR else None)
-        refs = collect_spring_refs(source_paths)
-        all_refs += refs
-        log(f"    Found {sum(1 for r in refs if not r.is_dynamic)} Spring ${'{'}VAR{'}'} references")
-
+        scanner_tasks["spring"] = (collect_spring_refs, source_paths)
     if "pydantic" in languages:
-        log("  Scanning Pydantic BaseSettings classes...", Fore.BLUE if USE_COLOR else None)
-        refs = collect_pydantic_refs(source_paths)
-        all_refs += refs
-        log(f"    Found {sum(1 for r in refs if not r.is_dynamic)} Pydantic field references")
-
+        scanner_tasks["pydantic"] = (collect_pydantic_refs, source_paths)
     if "env_inject" in languages or "gitea" in languages:
-        log("  Scanning env-injection patterns (SECTION__KEY)...", Fore.BLUE if USE_COLOR else None)
-        refs = collect_env_inject_refs(source_paths)
+        scanner_tasks["env_inject"] = (collect_env_inject_refs, source_paths)
+
+    # ── Parallel scanning ──────────────────────────────────────────────────────
+    log(f"  Scanning {len(scanner_tasks)} language(s) in parallel...",
+        Fore.BLUE if USE_COLOR else None)
+
+    all_refs = []
+    lang_results = {}
+
+    with ThreadPoolExecutor(max_workers=min(len(scanner_tasks), 8)) as executor:
+        future_to_lang = {
+            executor.submit(fn, paths): lang
+            for lang, (fn, paths) in scanner_tasks.items()
+        }
+        for future in as_completed(future_to_lang):
+            lang = future_to_lang[future]
+            try:
+                refs = future.result()
+                lang_results[lang] = refs
+            except Exception as e:
+                log(f"  [WARN] {lang} scanner failed: {e}",
+                    Fore.YELLOW if USE_COLOR else None)
+                lang_results[lang] = []
+
+    # Log results in a stable order and accumulate refs
+    LANG_ORDER = ["python", "java", "cpp", "go", "js", "rust", "spring", "pydantic", "env_inject"]
+    for lang in LANG_ORDER:
+        if lang not in lang_results:
+            continue
+        refs = lang_results[lang]
+        static_count  = sum(1 for r in refs if not r.is_dynamic)
+        dynamic_count = sum(1 for r in refs if r.is_dynamic)
+        label = {
+            "python": "Python", "java": "Java", "cpp": "C++", "go": "Go",
+            "js": "JS/TS", "rust": "Rust", "spring": "Spring Boot",
+            "pydantic": "Pydantic", "env_inject": "env_inject",
+        }.get(lang, lang)
+        log(f"    {label}: {static_count} static + {dynamic_count} dynamic references")
         all_refs += refs
-        log(f"    Found {sum(1 for r in refs if not r.is_dynamic)} env-injection references")
+
+    # Filter refs from .driftignore folders
+    if driftignore.folders:
+        from engine.drift_engine import _path_in_ignored_folder
+        before = len(all_refs)
+        all_refs = [r for r in all_refs
+                    if not _path_in_ignored_folder(r.file, driftignore.folders)]
+        filtered = before - len(all_refs)
+        if filtered:
+            log(f"  [INFO] Filtered {filtered} reference(s) from ignored folders",
+                Fore.CYAN if USE_COLOR else None)
 
     # Collect config declarations
     log("  Parsing config files...", Fore.BLUE if USE_COLOR else None)
-    config_decls, files_scanned = collect_config_decls(config_paths)
+    config_decls, files_scanned = collect_config_decls(
+        config_paths, use_shell_env=not args.no_shell_env
+    )
     log(f"    Found {len(config_decls)} declared variables in {len(files_scanned)} path(s)")
 
     # Run drift detection
@@ -345,7 +404,7 @@ def main():
         config_decls=config_decls,
         config_files=files_scanned,
         languages=languages,
-        driftignore_path=args.driftignore,
+        driftignore=driftignore,
     )
 
     if args.skip_unused:
